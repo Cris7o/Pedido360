@@ -34,8 +34,8 @@ public class JwtRoleConverter implements Converter<Jwt, AbstractAuthenticationTo
                 .findFirst()
                 .orElse(null);
 
-        String nombre = jwt.getClaimAsString("name");
         String email = jwt.getClaimAsString("email");
+        String nombre = Optional.ofNullable(jwt.getClaimAsString("name")).orElse(email);
         UsuarioAutenticado principal = new UsuarioAutenticado(jwt.getSubject(), nombre, email, rol);
 
         List<SimpleGrantedAuthority> authorities = grupos.stream()

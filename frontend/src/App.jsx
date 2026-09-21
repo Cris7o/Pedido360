@@ -265,7 +265,8 @@ function App() {
     }
 
     setProducts(DEMO_PRODUCTS)
-  }, [isAuthenticated, currentUser])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated])
 
   const filteredProducts = useMemo(() => {
     const normalizedQuery = searchTerm.trim().toLowerCase()
