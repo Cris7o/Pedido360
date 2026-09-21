@@ -1,5 +1,32 @@
 import { useEffect, useMemo, useState } from 'react'
 import './App.css'
+import { IconBag, IconClock, IconClose, IconFlame, IconMinus, IconPlus, IconSearch, IconStar, IconTruck } from './components/Icons'
+import PanelPedidos from './views/PanelPedidos'
+import PanelAdmin from './views/PanelAdmin'
+
+/** Muestra un respaldo cuando el producto no trae imagen o la URL falla. */
+function ProductImage({ src, nombre }) {
+  const [falló, setFalló] = useState(false)
+
+  if (!src || falló) {
+    return (
+      <div className="product-image-fallback" role="img" aria-label={`Sin foto de ${nombre}`}>
+        <IconBag width={26} height={26} />
+      </div>
+    )
+  }
+
+  return (
+    <img
+      src={src}
+      alt=""
+      loading="lazy"
+      width="400"
+      height="260"
+      onError={() => setFalló(true)}
+    />
+  )
+}
 
 const ROLE_PROFILES = {
   CLIENTE: { sub: 'cliente-demo', nombre: 'Ana García', email: 'ana@dev.local', label: 'CLIENTE' },
@@ -199,6 +226,8 @@ function App() {
   const [loginForm, setLoginForm] = useState(EMPTY_LOGIN_FORM)
   const [loginError, setLoginError] = useState('')
   const [showLoginForm, setShowLoginForm] = useState(false)
+  const [checkoutLoading, setCheckoutLoading] = useState(false)
+  const [pedidoEnProceso, setPedidoEnProceso] = useState(null)
 
   const currentProfile = ROLE_PROFILES[normalizeRole(currentUser?.rol || activeRole)] || ROLE_PROFILES.CLIENTE
   const cartTotal = useMemo(
@@ -268,6 +297,17 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated])
 
+  useEffect(() => {
+    if (!showLoginForm) return undefined
+
+    const cerrarConEscape = (event) => {
+      if (event.key === 'Escape') setShowLoginForm(false)
+    }
+
+    window.addEventListener('keydown', cerrarConEscape)
+    return () => window.removeEventListener('keydown', cerrarConEscape)
+  }, [showLoginForm])
+
   const filteredProducts = useMemo(() => {
     const normalizedQuery = searchTerm.trim().toLowerCase()
 
@@ -281,8 +321,8 @@ function App() {
 
       const matchesSearch =
         !normalizedQuery ||
-        product.nombre.toLowerCase().includes(normalizedQuery) ||
-        product.descripcion.toLowerCase().includes(normalizedQuery)
+        product.nombre?.toLowerCase().includes(normalizedQuery) ||
+        product.descripcion?.toLowerCase().includes(normalizedQuery)
 
       return matchesCategory && matchesSearch
     })
@@ -329,6 +369,8 @@ function App() {
       return
     }
 
+    setCheckoutLoading(true)
+
     try {
       await apiRequest(
         '/pedidos',
@@ -344,6 +386,46 @@ function App() {
       setCart([])
       showToast('Pedido confirmado con éxito', 'success')
       if (currentUser?.rol) await loadDashboard(currentUser.rol)
+    } catch (error) {
+      showToast(error.message, 'error')
+    } finally {
+      setCheckoutLoading(false)
+    }
+  }
+
+  const cambiarEstadoPedido = async (pedido, accion) => {
+    setPedidoEnProceso(pedido.id)
+
+    try {
+      await apiRequest(
+        `/pedidos/${pedido.id}/estado`,
+        { method: 'PATCH', body: JSON.stringify({ estado: accion.hacia }) },
+        activeRole,
+      )
+      showToast(`Pedido #${pedido.id}: ${accion.etiqueta.toLowerCase()}`, 'success')
+      await loadDashboard(activeRole)
+    } catch (error) {
+      showToast(error.message, 'error')
+    } finally {
+      setPedidoEnProceso(null)
+    }
+  }
+
+  const crearProducto = async (producto) => {
+    await apiRequest(
+      '/admin/productos',
+      { method: 'POST', body: JSON.stringify(producto) },
+      activeRole,
+    )
+    showToast(`${producto.nombre} agregado al catálogo`, 'success')
+    await loadDashboard(activeRole)
+  }
+
+  const desactivarProducto = async (producto) => {
+    try {
+      await apiRequest(`/admin/productos/${producto.id}`, { method: 'DELETE' }, activeRole)
+      showToast(`${producto.nombre} ya no está disponible`, 'success')
+      await loadDashboard(activeRole)
     } catch (error) {
       showToast(error.message, 'error')
     }
@@ -403,7 +485,7 @@ function App() {
         </div>
 
         <div className="search-wrap">
-          <span className="search-icon">⌕</span>
+          <IconSearch className="search-icon" width={18} height={18} />
           <input
             type="text"
             value={searchTerm}
@@ -432,13 +514,27 @@ function App() {
 
       {showLoginForm && !isAuthenticated && (
         <div className="login-overlay" onClick={() => setShowLoginForm(false)}>
-          <div className="login-card" onClick={(event) => event.stopPropagation()}>
+          <div
+            className="login-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="login-titulo"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="login-close"
+              onClick={() => setShowLoginForm(false)}
+              aria-label="Cerrar inicio de sesión"
+            >
+              <IconClose width={20} height={20} />
+            </button>
             <div className="login-header">
               <span className="brand-name login-brand">Pedido360</span>
             </div>
-            <h1>Iniciar sesión</h1>
+            <h2 id="login-titulo">Iniciar sesión</h2>
             <p className="login-copy">
-              No hay ninguna cuenta creada todavía. Inicia sesión con tus credenciales para continuar.
+              Inicia sesión con tus credenciales para hacer tu pedido.
             </p>
 
             <form className="login-form" onSubmit={handleLogin}>
@@ -447,7 +543,11 @@ function App() {
                 <input
                   type="email"
                   value={loginForm.email}
-                  placeholder="cliente@dev.local"
+                  placeholder="cliente@pedido360.cl"
+                  autoComplete="email"
+                  required
+                  aria-invalid={Boolean(loginError)}
+                  aria-describedby={loginError ? 'login-error' : undefined}
                   onChange={(event) => setLoginForm({ ...loginForm, email: event.target.value })}
                 />
               </label>
@@ -457,12 +557,19 @@ function App() {
                 <input
                   type="password"
                   value={loginForm.password}
-                  placeholder="123456"
+                  autoComplete="current-password"
+                  required
+                  aria-invalid={Boolean(loginError)}
+                  aria-describedby={loginError ? 'login-error' : undefined}
                   onChange={(event) => setLoginForm({ ...loginForm, password: event.target.value })}
                 />
               </label>
 
-              {loginError && <p className="login-error">{loginError}</p>}
+              {loginError && (
+                <p className="login-error" id="login-error" role="alert">
+                  {loginError}
+                </p>
+              )}
 
               <button type="submit" className="primary-button login-button">
                 Iniciar sesión
@@ -489,30 +596,145 @@ function App() {
         </div>
       )}
 
+      {activeRole === 'COCINA' && (
+        <main className="panel-shell">
+          <h1 className="sr-only">Pedido360 — panel de cocina</h1>
+          <PanelPedidos
+            rol="COCINA"
+            titulo="Cocina"
+            descripcion="Pedidos por preparar, en orden de llegada."
+            icono={<IconFlame width={22} height={22} />}
+            pedidos={kitchenOrders}
+            cargando={loading}
+            pedidoEnProceso={pedidoEnProceso}
+            onCambiarEstado={cambiarEstadoPedido}
+            vacioTitulo="No hay pedidos en cocina"
+            vacioTexto="Cuando un cliente haga un pedido va a aparecer acá."
+          />
+        </main>
+      )}
+
+      {activeRole === 'REPARTIDOR' && (
+        <main className="panel-shell">
+          <h1 className="sr-only">Pedido360 — panel de reparto</h1>
+          <PanelPedidos
+            rol="REPARTIDOR"
+            titulo="Reparto"
+            descripcion="Pedidos listos para salir y entregas en curso."
+            icono={<IconTruck width={22} height={22} />}
+            pedidos={deliveryOrders}
+            cargando={loading}
+            pedidoEnProceso={pedidoEnProceso}
+            onCambiarEstado={cambiarEstadoPedido}
+            vacioTitulo="No hay pedidos para repartir"
+            vacioTexto="Cuando la cocina marque un pedido como listo va a aparecer acá."
+          />
+        </main>
+      )}
+
+      {activeRole === 'ADMIN' && (
+        <main className="panel-shell">
+          <h1 className="sr-only">Pedido360 — panel de administración</h1>
+          <PanelAdmin
+            pedidos={adminOrders}
+            productos={adminProducts}
+            usuarios={adminUsers}
+            cargando={loading}
+            pedidoEnProceso={pedidoEnProceso}
+            onCambiarEstado={cambiarEstadoPedido}
+            onCrearProducto={crearProducto}
+            onDesactivarProducto={desactivarProducto}
+          />
+        </main>
+      )}
+
+      {activeRole === 'CLIENTE' && (
       <main className="content-shell">
-        <section className="catalog-panel">
-          <div className="category-strip">
+        <h1 className="sr-only">Pedido360 — catálogo y pedidos</h1>
+
+        <section className="catalog-panel" aria-labelledby="catalogo-titulo">
+          <div className="category-strip" role="group" aria-label="Filtrar por categoría">
             {CATEGORY_ITEMS.map((categoryItem) => (
               <button
                 key={categoryItem.id}
                 type="button"
                 className={`category-card ${selectedCategory === categoryItem.id ? 'active' : ''}`}
-                onClick={() => setSelectedCategory(categoryItem.id)}
+                onClick={() =>
+                  setSelectedCategory(selectedCategory === categoryItem.id ? 'all' : categoryItem.id)
+                }
+                aria-pressed={selectedCategory === categoryItem.id}
               >
-                <img src={categoryItem.image} alt={categoryItem.label} />
+                <img src={categoryItem.image} alt="" loading="lazy" width="120" height="120" />
                 <span>{categoryItem.label}</span>
               </button>
             ))}
           </div>
 
-          <div className="product-grid">
+          <div className="catalog-head">
+            <h2 id="catalogo-titulo">Menú</h2>
+            <p className="catalog-count" aria-live="polite">
+              {loading
+                ? 'Cargando platos…'
+                : `${filteredProducts.length} ${filteredProducts.length === 1 ? 'plato' : 'platos'}`}
+            </p>
+          </div>
+
+          {loading && (
+            <div className="product-grid" aria-hidden="true">
+              {[0, 1, 2, 3, 4, 5].map((slot) => (
+                <div key={slot} className="product-card skeleton-card">
+                  <div className="skeleton skeleton-image" />
+                  <div className="product-body">
+                    <div className="skeleton skeleton-line skeleton-line-lg" />
+                    <div className="skeleton skeleton-line" />
+                    <div className="skeleton skeleton-line skeleton-line-sm" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {!loading && filteredProducts.length === 0 && (
+            <div className="catalog-empty">
+              <IconSearch width={28} height={28} />
+              <h3>No encontramos platos</h3>
+              <p>
+                {searchTerm
+                  ? `No hay resultados para "${searchTerm}".`
+                  : 'No hay platos en esta categoría por ahora.'}
+              </p>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => {
+                  setSearchTerm('')
+                  setSelectedCategory('all')
+                }}
+              >
+                Ver todo el menú
+              </button>
+            </div>
+          )}
+
+          <div className="product-grid" hidden={loading || filteredProducts.length === 0}>
             {filteredProducts.map((product) => (
               <article key={product.id} className="product-card">
                 <div className="product-image-wrap">
-                  <img src={product.image} alt={product.nombre} />
+                  <ProductImage src={product.image} nombre={product.nombre} />
                   <div className="image-badges">
-                    <span>🕒 {product.tiempo}</span>
-                    <span>⭐ {product.rating}</span>
+                    {product.tiempo && (
+                      <span>
+                        <IconClock />
+                        {product.tiempo}
+                      </span>
+                    )}
+                    {product.rating && (
+                      <span>
+                        <IconStar />
+                        <span className="sr-only">Calificación </span>
+                        {product.rating}
+                      </span>
+                    )}
                   </div>
                 </div>
 
@@ -521,20 +743,42 @@ function App() {
                   <p>{product.descripcion}</p>
                   <div className="product-footer">
                     <strong>{formatMoney(product.precio)}</strong>
-                    <button type="button" className="add-button" onClick={() => addToCart(product)}>
-                      +
+                    <button
+                      type="button"
+                      className="add-button"
+                      onClick={() => addToCart(product)}
+                      aria-label={`Agregar ${product.nombre} al carrito`}
+                    >
+                      <IconPlus width={22} height={22} strokeWidth={2.5} />
                     </button>
                   </div>
                 </div>
               </article>
             ))}
           </div>
+
+          {isAuthenticated && activeRole === 'CLIENTE' && (
+            <PanelPedidos
+              rol="CLIENTE"
+              titulo="Mis pedidos"
+              descripcion="Sigue el estado de lo que pediste."
+              icono={<IconBag width={22} height={22} />}
+              pedidos={myOrders}
+              cargando={loading}
+              pedidoEnProceso={pedidoEnProceso}
+              onCambiarEstado={cambiarEstadoPedido}
+              vacioTitulo="Todavía no tienes pedidos"
+              vacioTexto="Cuando confirmes tu primer pedido vas a poder seguirlo desde acá."
+            />
+          )}
         </section>
 
         <aside className="cart-panel">
           {cart.length === 0 ? (
             <div className="cart-empty">
-              <div className="cart-empty-icon">🛍️</div>
+              <div className="cart-empty-icon">
+                <IconBag width={30} height={30} />
+              </div>
               <h3>Tu carrito está vacío</h3>
               <p>Agrega tus platos favoritos para continuar.</p>
             </div>
@@ -557,9 +801,21 @@ function App() {
                     </div>
 
                     <div className="quantity-control">
-                      <button type="button" onClick={() => updateCartQuantity(item.id, -1)}>-</button>
-                      <span>{item.cantidad}</span>
-                      <button type="button" onClick={() => updateCartQuantity(item.id, 1)}>+</button>
+                      <button
+                        type="button"
+                        onClick={() => updateCartQuantity(item.id, -1)}
+                        aria-label={`Quitar una unidad de ${item.nombre}`}
+                      >
+                        <IconMinus />
+                      </button>
+                      <span aria-label={`${item.cantidad} unidades`}>{item.cantidad}</span>
+                      <button
+                        type="button"
+                        onClick={() => updateCartQuantity(item.id, 1)}
+                        aria-label={`Agregar una unidad de ${item.nombre}`}
+                      >
+                        <IconPlus />
+                      </button>
                     </div>
                   </div>
                 ))}
@@ -580,13 +836,19 @@ function App() {
                 </div>
               </div>
 
-              <button type="button" className="primary-button checkout-button" onClick={handleCheckout}>
-                Confirmar pedido
+              <button
+                type="button"
+                className="primary-button checkout-button"
+                onClick={handleCheckout}
+                disabled={checkoutLoading}
+              >
+                {checkoutLoading ? 'Confirmando…' : 'Confirmar pedido'}
               </button>
             </>
           )}
         </aside>
       </main>
+      )}
     </div>
   )
 }
