@@ -63,6 +63,9 @@ public class CognitoSecurityConfig {
                 .csrf(AbstractHttpConfigurer::disable)
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
+                        // El preflight CORS del navegador nunca lleva token: es solo
+                        // una consulta previa de permisos, sin datos ni credenciales.
+                        .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/productos/**").permitAll()
                         .anyRequest().authenticated())
                 .exceptionHandling(ex -> ex

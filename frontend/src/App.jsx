@@ -1,8 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Authenticator, translations, useAuthenticator } from '@aws-amplify/ui-react'
+import { I18n } from 'aws-amplify/utils'
+import '@aws-amplify/ui-react/styles.css'
+import './lib/amplify'
+import { apiRequest } from './lib/api'
 import './App.css'
-import { IconBag, IconClock, IconClose, IconFlame, IconMinus, IconPlus, IconSearch, IconStar, IconTruck } from './components/Icons'
+import { IconBag, IconClock, IconFlame, IconMinus, IconPlus, IconSearch, IconStar, IconTruck } from './components/Icons'
 import PanelPedidos from './views/PanelPedidos'
 import PanelAdmin from './views/PanelAdmin'
+
+I18n.putVocabularies(translations)
+I18n.setLanguage('es')
 
 /** Muestra un respaldo cuando el producto no trae imagen o la URL falla. */
 function ProductImage({ src, nombre }) {
@@ -28,41 +36,10 @@ function ProductImage({ src, nombre }) {
   )
 }
 
-const ROLE_PROFILES = {
-  CLIENTE: { sub: 'cliente-demo', nombre: 'Ana García', email: 'ana@dev.local', label: 'CLIENTE' },
-  COCINA: { sub: 'cocina-demo', nombre: 'Lucía Cocina', email: 'cocina@dev.local', label: 'COCINA' },
-  REPARTIDOR: { sub: 'repartidor-demo', nombre: 'Mateo Delivery', email: 'delivery@dev.local', label: 'REPARTIDOR' },
-  ADMIN: { sub: 'admin-demo', nombre: 'Admin Pedido360', email: 'admin@dev.local', label: 'ADMIN' },
-}
 
-const STATUS_LABELS = {
-  PENDIENTE: 'Pendiente',
-  EN_PREPARACION: 'En preparación',
-  LISTO: 'Listo',
-  EN_REPARTO: 'En reparto',
-  ENTREGADO: 'Entregado',
-  CANCELADO: 'Cancelado',
-}
 
-const EMPTY_PRODUCT_FORM = {
-  id: null,
-  nombre: '',
-  descripcion: '',
-  precio: '',
-  disponible: true,
-}
 
-const EMPTY_LOGIN_FORM = {
-  email: '',
-  password: '',
-}
 
-const DEMO_ACCOUNTS = [
-  { email: 'cliente@dev.local', password: '123456', role: 'CLIENTE' },
-  { email: 'cocina@dev.local', password: '123456', role: 'COCINA' },
-  { email: 'delivery@dev.local', password: '123456', role: 'REPARTIDOR' },
-  { email: 'admin@dev.local', password: '123456', role: 'ADMIN' },
-]
 
 const CATEGORY_ITEMS = [
   {
@@ -160,38 +137,6 @@ const DEMO_PRODUCTS = [
   },
 ]
 
-function buildHeaders(role) {
-  const profile = ROLE_PROFILES[role]
-  return {
-    'Content-Type': 'application/json',
-    'X-Usuario-Sub': profile.sub,
-    'X-Nombre': profile.nombre,
-    'X-Email': profile.email,
-    'X-Rol': role,
-  }
-}
-
-async function apiRequest(path, options = {}, role = 'CLIENTE') {
-  const response = await fetch(`/api${path}`, {
-    ...options,
-    headers: {
-      ...buildHeaders(role),
-      ...(options.headers || {}),
-    },
-  })
-
-  if (!response.ok) {
-    const text = await response.text()
-    throw new Error(text || 'Ocurrió un error en la solicitud')
-  }
-
-  const contentType = response.headers.get('content-type') || ''
-  if (contentType.includes('application/json')) {
-    return response.json()
-  }
-
-  return null
-}
 
 function formatMoney(value) {
   const numericValue = Number(value ?? 0)
@@ -206,10 +151,9 @@ function normalizeRole(role) {
   return (role || 'CLIENTE').toUpperCase()
 }
 
-function App() {
+function App({ signOut }) {
   const [currentUser, setCurrentUser] = useState(null)
-  const [isAuthenticated, setIsAuthenticated] = useState(false)
-  const [activeRole, setActiveRole] = useState('CLIENTE')
+  const [activeRole, setActiveRole] = useState(null)
   const [products, setProducts] = useState(DEMO_PRODUCTS)
   const [adminProducts, setAdminProducts] = useState([])
   const [cart, setCart] = useState([])
@@ -222,14 +166,10 @@ function App() {
   const [toast, setToast] = useState(null)
   const [selectedCategory, setSelectedCategory] = useState('all')
   const [searchTerm, setSearchTerm] = useState('')
-  const [productForm, setProductForm] = useState(EMPTY_PRODUCT_FORM)
-  const [loginForm, setLoginForm] = useState(EMPTY_LOGIN_FORM)
-  const [loginError, setLoginError] = useState('')
-  const [showLoginForm, setShowLoginForm] = useState(false)
   const [checkoutLoading, setCheckoutLoading] = useState(false)
   const [pedidoEnProceso, setPedidoEnProceso] = useState(null)
+  const [errorSesion, setErrorSesion] = useState('')
 
-  const currentProfile = ROLE_PROFILES[normalizeRole(currentUser?.rol || activeRole)] || ROLE_PROFILES.CLIENTE
   const cartTotal = useMemo(
     () => cart.reduce((sum, item) => sum + Number(item.precio) * Number(item.cantidad), 0),
     [cart],
@@ -241,27 +181,32 @@ function App() {
     showToast.timeout = window.setTimeout(() => setToast(null), 2600)
   }
 
-  const loadDashboard = async (role = activeRole) => {
+  const loadDashboard = async (rolConocido = activeRole) => {
     setLoading(true)
 
     try {
-      const productList = await apiRequest('/productos', {}, role)
+      // El rol siempre sale del backend, que lo lee del claim cognito:groups
+      // del token. El frontend nunca lo decide por su cuenta.
+      const perfil = await apiRequest('/usuarios/me')
+      setCurrentUser(perfil)
+
+      const role = normalizeRole(perfil?.rol || rolConocido)
+      setActiveRole(role)
+      setErrorSesion('')
+
+      const productList = await apiRequest('/productos')
       setProducts(productList && productList.length ? productList : DEMO_PRODUCTS)
 
-      const profileResponse = await apiRequest('/usuarios/me', {}, role)
-      setCurrentUser(profileResponse)
-      setActiveRole(normalizeRole(profileResponse?.rol || role))
-
       if (role === 'CLIENTE') {
-        const myPedidoList = await apiRequest('/pedidos/mios', {}, role)
+        const myPedidoList = await apiRequest('/pedidos/mios')
         setMyOrders(myPedidoList || [])
       }
 
       if (role === 'ADMIN') {
         const [adminPedidoList, adminUserList, adminProductList] = await Promise.all([
-          apiRequest('/admin/pedidos', {}, role),
-          apiRequest('/admin/usuarios', {}, role),
-          apiRequest('/admin/productos', {}, role),
+          apiRequest('/admin/pedidos'),
+          apiRequest('/admin/usuarios'),
+          apiRequest('/admin/productos'),
         ])
 
         setAdminOrders(adminPedidoList || [])
@@ -270,43 +215,28 @@ function App() {
       }
 
       if (role === 'COCINA') {
-        const kitchenPedidoList = await apiRequest('/cocina/pedidos', {}, role)
+        const kitchenPedidoList = await apiRequest('/cocina/pedidos')
         setKitchenOrders(kitchenPedidoList || [])
       }
 
       if (role === 'REPARTIDOR') {
-        const deliveryPedidoList = await apiRequest('/repartidor/pedidos', {}, role)
+        const deliveryPedidoList = await apiRequest('/repartidor/pedidos')
         setDeliveryOrders(deliveryPedidoList || [])
       }
     } catch (error) {
+      setErrorSesion(error.message)
       showToast(error.message, 'error')
     } finally {
       setLoading(false)
     }
   }
 
+  // Amplify ya valido la sesion antes de montar este componente: aca solo
+  // queda preguntarle al backend quien es el usuario y que rol tiene.
   useEffect(() => {
-    if (isAuthenticated && currentUser?.rol) {
-      const role = normalizeRole(currentUser.rol)
-      setActiveRole(role)
-      loadDashboard(role)
-      return
-    }
-
-    setProducts(DEMO_PRODUCTS)
+    loadDashboard()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAuthenticated])
-
-  useEffect(() => {
-    if (!showLoginForm) return undefined
-
-    const cerrarConEscape = (event) => {
-      if (event.key === 'Escape') setShowLoginForm(false)
-    }
-
-    window.addEventListener('keydown', cerrarConEscape)
-    return () => window.removeEventListener('keydown', cerrarConEscape)
-  }, [showLoginForm])
+  }, [])
 
   const filteredProducts = useMemo(() => {
     const normalizedQuery = searchTerm.trim().toLowerCase()
@@ -329,11 +259,6 @@ function App() {
   }, [products, selectedCategory, searchTerm])
 
   const addToCart = (product) => {
-    if (!isAuthenticated) {
-      setShowLoginForm(true)
-      return
-    }
-
     setCart((currentCart) => {
       const existing = currentCart.find((item) => item.id === product.id)
       if (existing) {
@@ -359,11 +284,6 @@ function App() {
   }
 
   const handleCheckout = async () => {
-    if (!isAuthenticated) {
-      setShowLoginForm(true)
-      return
-    }
-
     if (!cart.length) {
       showToast('Agrega productos antes de confirmar tu pedido', 'error')
       return
@@ -403,7 +323,7 @@ function App() {
         activeRole,
       )
       showToast(`Pedido #${pedido.id}: ${accion.etiqueta.toLowerCase()}`, 'success')
-      await loadDashboard(activeRole)
+      await loadDashboard()
     } catch (error) {
       showToast(error.message, 'error')
     } finally {
@@ -418,58 +338,25 @@ function App() {
       activeRole,
     )
     showToast(`${producto.nombre} agregado al catálogo`, 'success')
-    await loadDashboard(activeRole)
+    await loadDashboard()
   }
 
   const desactivarProducto = async (producto) => {
     try {
-      await apiRequest(`/admin/productos/${producto.id}`, { method: 'DELETE' }, activeRole)
+      await apiRequest(`/admin/productos/${producto.id}`, { method: 'DELETE' })
       showToast(`${producto.nombre} ya no está disponible`, 'success')
-      await loadDashboard(activeRole)
+      await loadDashboard()
     } catch (error) {
       showToast(error.message, 'error')
     }
   }
 
-  const handleLogin = (event) => {
-    event.preventDefault()
-
-    const email = loginForm.email.trim().toLowerCase()
-    const password = loginForm.password
-    const account = DEMO_ACCOUNTS.find(
-      (item) => item.email.toLowerCase() === email && item.password === password,
-    )
-
-    if (!account) {
-      setLoginError('No hay ninguna cuenta creada. Inicia sesión con una cuenta válida o contacta al administrador.')
-      return
-    }
-
-    const profile = ROLE_PROFILES[account.role]
-    const user = { ...profile, rol: account.role }
-
-    setCurrentUser(user)
-    setActiveRole(account.role)
-    setIsAuthenticated(true)
-    setShowLoginForm(false)
-    setLoginError('')
-    setLoginForm(EMPTY_LOGIN_FORM)
-    showToast(`Bienvenido ${profile.nombre}`, 'success')
-  }
-
-  const handleLogout = () => {
-    setCurrentUser(null)
-    setIsAuthenticated(false)
-    setActiveRole('CLIENTE')
-    setCart([])
-    setLoginForm(EMPTY_LOGIN_FORM)
-    setLoginError('')
-    setShowLoginForm(true)
-    showToast('Inicia sesión para continuar', 'success')
-  }
-
   const deliveryFee = Math.min(cartTotal * 0.08, 3500)
   const totalWithFee = cartTotal + deliveryFee
+
+  if (errorSesion && !activeRole) {
+    return <SesionSinRol signOut={signOut} mensaje={errorSesion} />
+  }
 
   return (
     <div className="pedido-shell">
@@ -497,98 +384,14 @@ function App() {
 
         <div className="user-area">
           <div className="profile-box">
-            <span>{isAuthenticated ? currentUser?.email || currentProfile.email : 'invitado@pedido360.cl'}</span>
-            <span className="role-pill">
-              {isAuthenticated ? currentProfile.label : 'VISITANTE'}
-            </span>
+            <span>{currentUser?.email || 'Cargando…'}</span>
+            <span className="role-pill">{currentUser?.rol || '—'}</span>
           </div>
-          <button
-            type="button"
-            className="session-button"
-            onClick={() => (isAuthenticated ? handleLogout() : setShowLoginForm(true))}
-          >
-            {isAuthenticated ? 'Cerrar sesión' : 'Iniciar sesión'}
+          <button type="button" className="session-button" onClick={signOut}>
+            Cerrar sesión
           </button>
         </div>
       </header>
-
-      {showLoginForm && !isAuthenticated && (
-        <div className="login-overlay" onClick={() => setShowLoginForm(false)}>
-          <div
-            className="login-card"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="login-titulo"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <button
-              type="button"
-              className="login-close"
-              onClick={() => setShowLoginForm(false)}
-              aria-label="Cerrar inicio de sesión"
-            >
-              <IconClose width={20} height={20} />
-            </button>
-            <div className="login-header">
-              <span className="brand-name login-brand">Pedido360</span>
-            </div>
-            <h2 id="login-titulo">Iniciar sesión</h2>
-            <p className="login-copy">
-              Inicia sesión con tus credenciales para hacer tu pedido.
-            </p>
-
-            <form className="login-form" onSubmit={handleLogin}>
-              <label>
-                <span>Email</span>
-                <input
-                  type="email"
-                  value={loginForm.email}
-                  placeholder="cliente@pedido360.cl"
-                  autoComplete="email"
-                  required
-                  aria-invalid={Boolean(loginError)}
-                  aria-describedby={loginError ? 'login-error' : undefined}
-                  onChange={(event) => setLoginForm({ ...loginForm, email: event.target.value })}
-                />
-              </label>
-
-              <label>
-                <span>Contraseña</span>
-                <input
-                  type="password"
-                  value={loginForm.password}
-                  autoComplete="current-password"
-                  required
-                  aria-invalid={Boolean(loginError)}
-                  aria-describedby={loginError ? 'login-error' : undefined}
-                  onChange={(event) => setLoginForm({ ...loginForm, password: event.target.value })}
-                />
-              </label>
-
-              {loginError && (
-                <p className="login-error" id="login-error" role="alert">
-                  {loginError}
-                </p>
-              )}
-
-              <button type="submit" className="primary-button login-button">
-                Iniciar sesión
-              </button>
-
-              <button
-                type="button"
-                className="secondary-button demo-button"
-                onClick={() => {
-                  setLoginForm({ email: 'cliente@dev.local', password: '123456' })
-                  setLoginError('')
-                }}
-              >
-                Usar cuenta demo
-              </button>
-            </form>
-          </div>
-        </div>
-      )}
 
       {toast && (
         <div className={`toast toast-${toast.kind}`} role="status" aria-live="polite">
@@ -757,7 +560,7 @@ function App() {
             ))}
           </div>
 
-          {isAuthenticated && activeRole === 'CLIENTE' && (
+          {activeRole === 'CLIENTE' && (
             <PanelPedidos
               rol="CLIENTE"
               titulo="Mis pedidos"
@@ -853,4 +656,40 @@ function App() {
   )
 }
 
-export default App
+/**
+ * Cognito autentica al usuario, pero el rol sale de los grupos del pool. Si
+ * un usuario valido no esta en ningun grupo, el backend no puede autorizarlo:
+ * se lo explicamos en vez de dejar la pantalla en blanco.
+ */
+function SesionSinRol({ signOut, mensaje }) {
+  return (
+    <div className="pedido-shell">
+      <div className="sesion-error" role="alert">
+        <h1>No pudimos cargar tu sesión</h1>
+        <p>{mensaje}</p>
+        <p className="sesion-error-ayuda">
+          Si el problema persiste, pide al administrador que te asigne un rol
+          (CLIENTE, COCINA, REPARTIDOR o ADMIN) en el grupo correspondiente.
+        </p>
+        <button type="button" className="accion-primaria" onClick={signOut}>
+          Cerrar sesión
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function AppConSesion() {
+  const { signOut } = useAuthenticator((contexto) => [contexto.user])
+  return <App signOut={signOut} />
+}
+
+export default function AppConAutenticacion() {
+  return (
+    <Authenticator loginMechanisms={['email']} hideSignUp>
+      <AppConSesion />
+    </Authenticator>
+  )
+}
+
+export { SesionSinRol }
